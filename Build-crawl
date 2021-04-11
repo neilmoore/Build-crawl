@@ -1,0 +1,132 @@
+#! /bin/bash
+
+# By Neil Moore <neil@s-z.org>.  Do as thou wilt.
+
+# Usage:
+#   build-crawl 0.14 -- tiles  # create tiles build crawl-0.14-tiles
+#   build-crawl -- ascii       # crawl-master-ascii (default LHS is master)
+#   build-crawl 0.14-diag      # crawl-0.14-diag-web (default RHS is web)
+#   build-crawl                # crawl-master-web
+#   build-crawl diag opt master -- tiles web  # Six builds
+#
+# The right hand side (variant) is "tiles", "ascii", or "web".
+#
+# To build a specific target rather than "all", use //, which must follow
+# the variant if any.
+#   build-crawl 0.14 -- tiles // tilebuf.o
+#   build-crawl // menu.o
+#
+# The left-hand-side can be anything; some substrings are special:
+#   nowiz:  disable wizmode
+#   diag:   build with full debugging diagnostics
+#   clang:  use clang
+#   lto:    build with link-time optimisation (when not clang)
+#   contrib: build and use all contribs
+#
+#   The following three are mutually exclusive:
+#     noopt: disable all optimisation
+#     opt:   enable default optimisation (-O2 for gcc) plus LTO
+#     prof:  enable profiling and default optimisation
+#   If none of these is specificed, the default is -Og for gcc, -O0 for clang 
+
+branches=()
+variants=()
+targets=()
+varmode=
+targetmode=
+for arg in "$@"; do
+	if [[ $arg = // ]]; then
+		targetmode=true
+	elif [[ -n $targetmode ]]; then
+		targets[${#targets[@]}]="$arg"
+	elif [[ $arg = -- ]]; then
+		varmode=true
+	elif [[ -n $varmode ]]; then
+		variants[${#variants[@]}]="$arg"
+	else
+		branches[${#branches[@]}]="$arg"
+	fi
+done
+
+if type lscpu >/dev/null 2>&1 ; then
+	cpus=$(lscpu -p=CPU | grep -cv '^#')
+elif [[ -e /proc/cpuinfo ]]; then
+	cpus=$(grep -c '^processor' /proc/cpuinfo)
+else
+	cpus=2
+fi
+
+if (( ${#branches[@]} == 0 )); then
+	branches=master
+fi
+
+if (( ${#variants[@]} == 0 )); then
+	variants=web
+fi
+
+for br in "${branches[@]}"; do
+	for var in "${variants[@]}"; do
+		args="$CRAWL_BUILD_OPTS DEBUG=y USE_PCRE=y"
+		extflag=""
+
+		echo
+
+		if [[ $br = *clang6* ]]; then
+			args="$args FORCE_CC=clang-6.0 FORCE_CXX=clang++-6.0"
+		elif [[ $br = *clang5* ]]; then
+			args="$args FORCE_CC=clang-5.0 FORCE_CXX=clang++-5.0"
+		elif [[ $br = *clang* ]]; then
+			args="$args FORCE_CC=clang FORCE_CXX=clang++"
+		fi
+
+		if [[ $br = *sound* ]]; then
+			args="SOUND=y $args"
+		fi
+
+		if [[ $br = *prof* ]]; then
+			extflag="$extflag -pg"
+		elif [[ $br = *noopt* ]]; then
+			args="$args NO_OPTIMIZE=y"
+		elif [[ $br = *opt* ]]; then
+			: # default for Crawl's Makefile
+		else
+			extflag="$extflag -Og"
+
+			# The following is only needed for clang <4.0
+			# if [[ $br = *clang* ]]; then
+			# 	args="$args NO_OPTIMIZE=y"
+			# else
+			# 	extflag="$extflag -Og"
+			# fi
+		fi
+
+		if [[ $br != *clang* && $br = *lto* ]]; then
+			args="$args LTO=y"
+		fi
+
+		if [[ $br == *contrib* ]]; then
+			args="$args BUILD_ALL=y"
+		fi
+		
+		[[ $var = *tiles* ]] && args="$args TILES=y"
+		[[ $var = *web* ]] && args="$args WEBTILES=y"
+
+		[[ $br = *nowiz* ]] && args="$args NOWIZARD=y"
+		[[ $br = *dgl* ]] && args="$args USE_DGAMELAUNCH=y"
+		
+		if [[ $br = *diag* ]]; then
+			args="$args FULLDEBUG=y"
+		else
+			extflag="$extflag -DDEBUG_STATISTICS"
+		fi
+
+		echo "BUILDING var=$var br=$br args='$args' flags='$extflag'"
+		time make -j"$cpus" EXTERNAL_FLAGS_L="$extflag $CRAWL_CFLAGS" \
+		              EXTERNAL_LDFLAGS="$extflag $CRAWL_CFLAGS" \
+			      $args ${targets[@]} \
+			&& mv crawl crawl-$br-$var \
+			|| { echo >&2 "ERROR"; exit 1; }
+	done
+done
+
+ln -f crawl-master-web crawl
